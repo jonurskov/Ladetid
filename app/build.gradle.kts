@@ -15,6 +15,16 @@ android {
         versionName = "1.2"
     }
 
+    // Fast nøgle, så nye udgaver kan installeres oven i den gamle uden at slette den
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("ladetid-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
