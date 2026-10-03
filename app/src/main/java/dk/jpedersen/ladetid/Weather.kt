@@ -237,7 +237,7 @@ object HydroRepository {
 
     fun describe(h: Hydro): String {
         val pct = Math.round(h.fill * 100)
-        if (h.median < 0) return "Sydnorske vandmagasiner er $pct % fyldt (uge ${h.week})."
+        if (h.median < 0) return "Sydnorske vandmagasiner var $pct % fyldt i uge ${h.week}. Nye tal fra NVE hver onsdag."
         val med = Math.round(h.median * 100)
         val diff = pct - med
         val effect = when {
@@ -245,7 +245,8 @@ object HydroRepository {
             diff >= 5 -> "Der er mere vand end normalt, og det hjælper med at holde prisen nede."
             else -> "Det er omkring normalt for årstiden."
         }
-        return "Sydnorske vandmagasiner er $pct % fyldt i uge ${h.week} (normalt $med %). $effect"
+        return "Sydnorske vandmagasiner var $pct % fyldt i uge ${h.week} (normalt $med %). $effect " +
+            "Nye tal fra NVE hver onsdag."
     }
 
     private fun httpGet(url: String): String {

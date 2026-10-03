@@ -347,7 +347,7 @@ class MainActivity : Activity() {
             }
             val why = listOf(Explain.level(avg, periodAvg), Explain.reasons(weather[w.day], w.day))
                 .filter { it.isNotEmpty() }.joinToString(". ")
-            dayList.addView(dayRow(w, saving, status, why, range))
+            dayList.addView(dayRow(w, saving, status, why, range, dayHours, inWin, data.okSources))
         }
         if (windows.isEmpty()) {
             dayList.addView(text("Ingen priser at vise endnu.", 14f, R.color.muted))
@@ -422,7 +422,10 @@ class MainActivity : Activity() {
         saving: Int?,
         status: String,
         why: String,
-        range: Pair<Double, Double>?
+        range: Pair<Double, Double>?,
+        dayHours: List<HourPrice>,
+        inWin: List<HourPrice>,
+        sources: List<String>
     ): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -435,6 +438,11 @@ class MainActivity : Activity() {
         }
         leftCol.addView(text(Fmt.day(w.day), 15f, R.color.ink, bold = true))
         leftCol.addView(text("${Fmt.span(w)} · $status", 13f, R.color.muted))
+        if (dayHours.isNotEmpty()) {
+            val lo = dayHours.minOf { it.price }
+            val hi = dayHours.maxOf { it.price }
+            leftCol.addView(text("Dagens priser: ${num(lo)} til ${num(hi)} kr", 12.5f, R.color.muted))
+        }
         if (why.isNotEmpty()) {
             leftCol.addView(text(why, 12.5f, R.color.muted).apply {
                 setTypeface(Typeface.DEFAULT, Typeface.ITALIC)
@@ -453,8 +461,14 @@ class MainActivity : Activity() {
         } else if (saving != null && saving > 0) {
             rightCol.addView(text("$saving% under dagens snit", 12f, R.color.muted).apply { gravity = Gravity.END })
         }
+        rightCol.addView(text("Detaljer ›", 12f, R.color.accent, bold = true).apply {
+            gravity = Gravity.END
+            setPadding(0, dp(4), 0, 0)
+        })
         row.addView(leftCol)
         row.addView(rightCol)
+        row.isClickable = true
+        row.setOnClickListener { showDayDetail(w, status, dayHours, inWin, sources) }
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -464,6 +478,106 @@ class MainActivity : Activity() {
             })
             addView(row)
         }
+    }
+
+    private fun num(v: Double) = String.format(java.util.Locale("da", "DK"), "%.2f", v)
+
+    /** En række med tekst til venstre og et tal til højre. */
+    private fun pair(label: String, value: String, bold: Boolean = false, colorRes: Int = R.color.ink): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(3), 0, dp(3))
+            addView(text(label, 14f, colorRes, bold).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(text(value, 14f, colorRes, bold).apply { gravity = Gravity.END })
+        }
+
+    private fun heading(s: String) = text(s, 13f, R.color.accent, bold = true).apply {
+        setPadding(0, dp(14), 0, dp(4))
+    }
+
+    /** Viser hvordan gennemsnitsprisen for dagens bedste ladetid er regnet ud. */
+    private fun showDayDetail(
+        w: ChargeWindow,
+        status: String,
+        dayHours: List<HourPrice>,
+        inWin: List<HourPrice>,
+        sources: List<String>
+    ) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(8), dp(22), dp(8))
+        }
+        box.addView(text("${Fmt.span(w)} · $status", 13f, R.color.muted))
+
+        // Dagens priser
+        if (dayHours.isNotEmpty()) {
+            box.addView(heading("DAGENS PRISER"))
+            val lo = dayHours.minByOrNull { it.price }!!
+            val hi = dayHours.maxByOrNull { it.price }!!
+            box.addView(pair("Laveste (kl. ${Fmt.clock(lo.start)})", "${num(lo.price)} kr"))
+            box.addView(pair("Højeste (kl. ${Fmt.clock(hi.start)})", "${num(hi.price)} kr"))
+            box.addView(pair("Gennemsnit hele døgnet", "${num(dayHours.map { it.price }.average())} kr"))
+        }
+
+        // Timerne i ladetiden
+        box.addView(heading("TIMERNE I LADETIDEN"))
+        inWin.forEach { h ->
+            box.addView(pair("kl. ${Fmt.clock(h.start)} til ${Fmt.clock(h.start + HOUR_MS)}", "${num(h.price)} kr"))
+        }
+        box.addView(pair("Gennemsnit (${num(inWin.sumOf { it.price })} ÷ ${inWin.size})",
+            "${num(w.avg)} kr", bold = true))
+
+        // Hvad prisen består af
+        if (inWin.isNotEmpty()) {
+            val vat = Store.inclVat(this)
+            val transport = Store.inclTransport(this)
+            val tax = Store.inclTax(this)
+            val extra = Store.extraOre(this) / 100.0
+            val spot = inWin.map { it.spot }.average()
+            val net = inWin.map { it.net }.average()
+            val en = inWin.map { it.energinet }.average()
+            val afgift = inWin.map { it.tax }.average()
+            var sub = spot + extra
+            box.addView(heading("SÅDAN ER GENNEMSNITTET SAT SAMMEN"))
+            val n = inWin.map { it.sources }.minOrNull() ?: 1
+            val spotLabel = if (n >= 2) "Spotpris (snit af ${sources.joinToString(" og ")})" else "Spotpris"
+            box.addView(pair(spotLabel, "${num(spot)} kr"))
+            if (extra > 0) box.addView(pair("Elhandlers tillæg", "${num(extra)} kr"))
+            if (transport) {
+                val name = Store.supplierName(this).ifEmpty { "netselskab" }
+                box.addView(pair("Transport, $name", "${num(net)} kr"))
+                box.addView(pair("Transport, Energinet", "${num(en)} kr"))
+                sub += net + en
+            }
+            if (tax) {
+                box.addView(pair("Elafgift", "${num(afgift)} kr"))
+                sub += afgift
+            }
+            if (vat) {
+                box.addView(pair("Moms 25 %", "${num(sub * 0.25)} kr"))
+                sub *= 1.25
+            }
+            box.addView(pair("I alt pr. kWh", "${num(sub)} kr", bold = true))
+            val vatNote = if (vat) "Beløbene er uden moms, og momsen lægges på til sidst." else "Prisen er uden moms."
+            box.addView(text("Alle beløb er gennemsnit for timerne i ladetiden. $vatNote " +
+                "Små forskelle skyldes afrunding.", 12f, R.color.muted).apply {
+                setPadding(0, dp(8), 0, 0)
+            })
+            if (w.forecast) {
+                box.addView(text("Spotprisen er en prognose og kan ændre sig. Tariffer og afgift er faste.",
+                    12f, R.color.muted).apply { setPadding(0, dp(4), 0, 0) })
+            }
+        }
+
+        val scroll = android.widget.ScrollView(this)
+        scroll.addView(box)
+        AlertDialog.Builder(this)
+            .setTitle(Fmt.day(w.day))
+            .setView(scroll)
+            .setPositiveButton("Luk", null)
+            .show()
     }
 
     private fun text(s: String, size: Float, colorRes: Int, bold: Boolean = false) = TextView(this).apply {

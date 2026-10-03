@@ -11,8 +11,8 @@ android {
         applicationId = "dk.jpedersen.ladetid"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     // Fast nøgle, så nye udgaver kan installeres oven i den gamle uden at slette den
