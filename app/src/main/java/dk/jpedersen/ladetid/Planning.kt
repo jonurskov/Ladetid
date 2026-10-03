@@ -39,13 +39,90 @@ data class ChargeWindow(
     val end: Long get() = start + hours * HOUR_MS
 }
 
+/** Én sammenhængende periode i en ladeplan. */
+data class ChargeBlock(val start: Long, val end: Long, val avg: Double)
+
+/** Resultatet af "lad X kWh inden et tidspunkt". */
+data class EnergyPlan(
+    val blocks: List<ChargeBlock>,
+    val hours: Set<Long>,
+    val cost: Double,          // samlet pris i kr
+    val avgPrice: Double,      // gennemsnitlig pris pr. kWh
+    val costNow: Double,       // hvad det ville koste at lade med det samme
+    val missingKwh: Double,    // hvor meget der ikke kan nås før tidspunktet
+    val forecast: Boolean,     // bygger planen på prognoser
+    val rough: Boolean         // bygger planen på grove skøn (dag 6 og frem)
+)
+
 object Planner {
+    /** Antal dage appen viser. Påmindelser gives kun for de første [NOTIFY_DAYS]. */
+    const val DAYS = 9
+    const val NOTIFY_DAYS = 5
+    const val SURE_DAYS = 5
+
+    /**
+     * Finder de billigste timer at lade [kwh] med [kw] i timen, så det er færdigt senest [deadline].
+     * Timerne behøver ikke ligge i forlængelse af hinanden. Den sidste, ufuldstændige time lægges
+     * i den dyreste af de valgte timer, så prisen ikke bliver regnet for lav.
+     */
+    fun energyPlan(hours: List<HourPrice>, kwh: Double, kw: Double, now: Long, deadline: Long): EnergyPlan {
+        val nextHour = now - Math.floorMod(now, HOUR_MS) + HOUR_MS
+        val usable = hours.filter { it.start >= nextHour && it.start + HOUR_MS <= deadline }
+            .sortedBy { it.start }
+        val needHours = Math.ceil(kwh / kw - 1e-9).toInt().coerceAtLeast(1)
+        val chosen = usable.sortedBy { it.price }.take(needHours).sortedBy { it.start }
+
+        val maxKwh = chosen.size * kw
+        val missing = (kwh - maxKwh).coerceAtLeast(0.0)
+        val charged = kwh - missing
+
+        // Energi pr. time: fuld effekt, undtagen den rest der lægges i den dyreste time
+        fun costOf(list: List<HourPrice>, energy: Double): Double {
+            if (list.isEmpty()) return 0.0
+            val full = Math.floor(energy / kw + 1e-9).toInt().coerceAtMost(list.size)
+            val rest = energy - full * kw
+            val byPrice = list.sortedBy { it.price }
+            var c = byPrice.take(full).sumOf { it.price * kw }
+            if (rest > 1e-9 && full < byPrice.size) c += byPrice[full].price * rest
+            return c
+        }
+        val cost = costOf(chosen, charged)
+
+        // Til sammenligning: lad med det samme fra næste hele time
+        val asap = usable.take(needHours)
+        val asapCost = if (asap.isEmpty()) 0.0 else {
+            val full = Math.floor(charged / kw + 1e-9).toInt().coerceAtMost(asap.size)
+            val rest = charged - full * kw
+            var c = asap.take(full).sumOf { it.price * kw }
+            if (rest > 1e-9 && full < asap.size) c += asap[full].price * rest
+            c
+        }
+
+        // Saml timer der ligger i forlængelse af hinanden til perioder
+        val blocks = mutableListOf<ChargeBlock>()
+        var i = 0
+        while (i < chosen.size) {
+            var j = i
+            while (j + 1 < chosen.size && chosen[j + 1].start == chosen[j].start + HOUR_MS) j++
+            val part = chosen.subList(i, j + 1)
+            blocks.add(ChargeBlock(part.first().start, part.last().start + HOUR_MS, part.map { it.price }.average()))
+            i = j + 1
+        }
+
+        val sureUntil = dateOf(now).plusDays(SURE_DAYS.toLong())
+        return EnergyPlan(
+            blocks, chosen.map { it.start }.toSet(), cost,
+            if (charged > 0) cost / charged else 0.0, asapCost, missing,
+            chosen.any { it.forecast }, chosen.any { !dateOf(it.start).isBefore(sureUntil) }
+        )
+    }
+
     /**
      * Finder for hver af de næste [days] dage (i dag medregnet) det sammenhængende vindue
      * på [chargeHours] timer med den laveste gennemsnitspris. Vinduet skal starte på dagen,
      * men må gerne slutte efter midnat.
      */
-    fun plan(hours: List<HourPrice>, chargeHours: Int, now: Long, days: Int = 5): List<ChargeWindow> {
+    fun plan(hours: List<HourPrice>, chargeHours: Int, now: Long, days: Int = DAYS): List<ChargeWindow> {
         val byStart = hours.associateBy { it.start }
         val currentHour = now - Math.floorMod(now, HOUR_MS)
         val today = Instant.ofEpochMilli(now).atZone(CPH).toLocalDate()
@@ -95,6 +172,21 @@ object Fmt {
 
     fun span(w: ChargeWindow): String = "kl. ${clock(w.start)} til ${clock(w.end)}"
 
+    fun span(start: Long, end: Long): String = "kl. ${clock(start)} til ${clock(end)}"
+
+    /** Fx "fre 9. okt" */
+    fun dayDate(date: LocalDate): String {
+        val today = LocalDate.now(CPH)
+        return when (date) {
+            today -> "i dag"
+            today.plusDays(1) -> "i morgen"
+            else -> shortDay(date) + " " + date.dayOfMonth + ". " +
+                DateTimeFormatter.ofPattern("MMM", DA).format(date).trimEnd('.')
+        }
+    }
+
+    fun kr0(v: Double): String = String.format(DA, "%.0f kr", v)
+
     fun kr(v: Double): String = String.format(DA, "%.2f kr", v)
 
     fun time(epochMs: Long): String =
@@ -109,13 +201,25 @@ object Refresher {
     fun refresh(ctx: Context): PriceData {
         val data = PriceRepository.fetch(Store.area(ctx), Store.supplierId(ctx))
         Store.save(ctx, data)
+        // Vejret er kun til forklaring, så appen virker videre, hvis det fejler
+        try {
+            WeatherRepository.save(ctx, WeatherRepository.fetch())
+        } catch (e: Exception) {
+        }
         replan(ctx, data)
         return data
     }
 
     fun replan(ctx: Context, data: PriceData) {
-        val windows = Planner.plan(Pricing.apply(ctx, data.hours), Store.chargeHours(ctx), System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val priced = Pricing.apply(ctx, data.hours)
+        val windows = Planner.plan(priced, Store.chargeHours(ctx), now, Planner.NOTIFY_DAYS)
         Scheduler.schedule(ctx, windows)
+        val deadline = Store.planDeadline(ctx)
+        val plan = if (Store.planNotify(ctx) && deadline > now)
+            Planner.energyPlan(priced, Store.planKwh(ctx).toDouble(), Store.planKw(ctx).toDouble(), now, deadline)
+        else null
+        Scheduler.schedulePlan(ctx, plan, Store.planKwh(ctx), deadline)
     }
 
     private fun constraints() =
@@ -174,7 +278,7 @@ object Scheduler {
             val key = w.day.toString()
             if (at <= now || Store.wasNotified(ctx, key)) return@forEachIndexed
             val intent = Intent(ctx, AlarmReceiver::class.java)
-                .putExtra("day", key)
+                .putExtra("key", key)
                 .putExtra("title", "Om en time er det bedst at lade")
                 .putExtra("text", "${Fmt.day(w.day)} ${Fmt.span(w)}, ca. ${Fmt.kr(w.avg)} pr. kWh i snit")
             val pi = PendingIntent.getBroadcast(
@@ -185,11 +289,41 @@ object Scheduler {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
         }
     }
+
+    /** Påmindelser en time før hver periode i ladeplanen. */
+    fun schedulePlan(ctx: Context, plan: EnergyPlan?, kwh: Int, deadline: Long) {
+        val am = ctx.getSystemService(AlarmManager::class.java)
+        for (i in 0 until SLOTS) {
+            PendingIntent.getBroadcast(
+                ctx, 200 + i, Intent(ctx, AlarmReceiver::class.java),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )?.let { am.cancel(it); it.cancel() }
+        }
+        if (plan == null) return
+        val now = System.currentTimeMillis()
+        val total = plan.blocks.size
+        plan.blocks.take(SLOTS).forEachIndexed { i, b ->
+            val at = b.start - HOUR_MS
+            val key = "${Planner.dateOf(b.start)}#plan#${b.start}"
+            if (at <= now || Store.wasNotified(ctx, key)) return@forEachIndexed
+            val part = if (total > 1) " (del ${i + 1} af $total)" else ""
+            val intent = Intent(ctx, AlarmReceiver::class.java)
+                .putExtra("key", key)
+                .putExtra("title", "Om en time: sæt bilen til")
+                .putExtra("text", "Lad ${Fmt.span(b.start, b.end)}$part, så du har $kwh kWh " +
+                    "senest ${Fmt.dayDate(Planner.dateOf(deadline))} kl. ${Fmt.clock(deadline)}")
+            val pi = PendingIntent.getBroadcast(
+                ctx, 200 + i, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
 }
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        val day = intent.getStringExtra("day") ?: return
+        val day = intent.getStringExtra("key") ?: return
         if (Store.wasNotified(ctx, day)) return
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)

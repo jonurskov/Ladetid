@@ -18,6 +18,8 @@ class PriceChartView @JvmOverloads constructor(
 
     private var hours: List<HourPrice> = emptyList()
     private var windowHours: Set<Long> = emptySet()
+    private var planHours: Set<Long> = emptySet()
+    private var roughFrom: Long = Long.MAX_VALUE
     private var selected = -1
 
     private val dp = resources.displayMetrics.density
@@ -29,6 +31,8 @@ class PriceChartView @JvmOverloads constructor(
         color = Color.parseColor("#6B756F"); textSize = 10.5f * dp
     }
     private val markPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#1E2A24") }
+    private val planPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2F6FD6") }
+    private val roughPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F1EEE6") }
     private val tipBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#1E2A24") }
     private val tipText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; textSize = 12f * dp; isFakeBoldText = true
@@ -38,8 +42,11 @@ class PriceChartView @JvmOverloads constructor(
     private val mid = Color.parseColor("#E0A43A")
     private val dear = Color.parseColor("#C2512F")
 
-    fun setData(hours: List<HourPrice>, windows: List<ChargeWindow>) {
+    /** [roughFrom]: fra dette tidspunkt er prisen kun et groft skøn og tegnes svagere. */
+    fun setData(hours: List<HourPrice>, windows: List<ChargeWindow>, plan: Set<Long>, roughFrom: Long) {
         this.hours = hours
+        this.planHours = plan
+        this.roughFrom = roughFrom
         windowHours = windows.flatMap { w -> (0 until w.hours).map { w.start + it * HOUR_MS } }.toSet()
         selected = -1
         invalidate()
@@ -54,12 +61,21 @@ class PriceChartView @JvmOverloads constructor(
 
         val left = 30f * dp
         val top = 26f * dp
-        val bottom = height - 30f * dp
+        val bottom = height - 32f * dp
         val chartW = width - left
         val prices = hours.map { it.price }
         val maxP = max(prices.max() * 1.08, 0.5)
         val minP = min(prices.min(), 0.0)
         fun y(v: Double) = (bottom - (v - minP) / (maxP - minP) * (bottom - top)).toFloat()
+
+        // Baggrund bag de dage, der kun er et groft skøn
+        val roughIdx = hours.indexOfFirst { it.start >= roughFrom }
+        if (roughIdx >= 0) {
+            val chartW0 = width - left
+            val x = left + roughIdx * (chartW0 / hours.size)
+            canvas.drawRect(x, top - 8 * dp, width.toFloat(), bottom, roughPaint)
+            canvas.drawText("groft skøn", x + 4 * dp, top - 12 * dp + 10.5f * dp, labelPaint)
+        }
 
         // Hjælpelinjer
         val step = niceStep(maxP)
@@ -79,7 +95,11 @@ class PriceChartView @JvmOverloads constructor(
         hours.forEachIndexed { i, h ->
             val rank = sorted.indexOf(h.price).toFloat() / max(1, sorted.size - 1)
             barPaint.color = blend(rank)
-            barPaint.alpha = if (h.forecast) 120 else 255
+            barPaint.alpha = when {
+                h.start >= roughFrom -> 70
+                h.forecast -> 130
+                else -> 255
+            }
             val x0 = left + i * slot + gap / 2
             val x1 = left + (i + 1) * slot - gap / 2
             val y0 = y(max(h.price, 0.0))
@@ -90,6 +110,10 @@ class PriceChartView @JvmOverloads constructor(
             if (h.start in windowHours) {
                 canvas.drawRoundRect(RectF(x0, bottom + 3 * dp, x1, bottom + 7 * dp), 2 * dp, 2 * dp, markPaint)
             }
+            // Markering af timerne i ladeplanen
+            if (h.start in planHours) {
+                canvas.drawRoundRect(RectF(x0, bottom + 9 * dp, x1, bottom + 13 * dp), 2 * dp, 2 * dp, planPaint)
+            }
 
             // Dagsskel ved midnat
             if (Fmt.hour(h.start) == 0 && i > 0) {
@@ -99,7 +123,7 @@ class PriceChartView @JvmOverloads constructor(
             if (Fmt.hour(h.start) == 12) {
                 val label = Fmt.shortDay(Planner.dateOf(h.start))
                 val tw = labelPaint.measureText(label)
-                canvas.drawText(label, left + i * slot - tw / 2, bottom + 22 * dp, labelPaint)
+                canvas.drawText(label, left + i * slot - tw / 2, bottom + 26 * dp, labelPaint)
             }
         }
 
@@ -109,7 +133,11 @@ class PriceChartView @JvmOverloads constructor(
             val x = left + selected * slot + slot / 2
             canvas.drawLine(x, top - 4 * dp, x, bottom, markPaint)
             val txt = "${Fmt.shortDay(Planner.dateOf(h.start))} kl. ${Fmt.clock(h.start)}: ${Fmt.kr(h.price)}" +
-                if (h.forecast) " (prognose)" else ""
+                when {
+                    h.start >= roughFrom -> " (groft skøn)"
+                    h.forecast -> " (prognose)"
+                    else -> ""
+                }
             val tw = tipText.measureText(txt)
             val bx = (x - tw / 2 - 8 * dp).coerceIn(0f, width - tw - 16 * dp)
             canvas.drawRoundRect(RectF(bx, 0f, bx + tw + 16 * dp, 20 * dp), 10 * dp, 10 * dp, tipBg)

@@ -25,7 +25,11 @@ data class HourPrice(
     val tax: Double,        // elafgift
     val sources: Int,       // hvor mange kilder der indgår i spotprisen
     val forecast: Boolean,  // true hvis spotprisen er en prognose
-    val price: Double = 0.0
+    val spotLo: Double = Double.NaN,  // laveste forventede spotpris (kun prognoser)
+    val spotHi: Double = Double.NaN,  // højeste forventede spotpris (kun prognoser)
+    val price: Double = 0.0,
+    val priceLo: Double = Double.NaN,
+    val priceHi: Double = Double.NaN
 )
 
 class PriceData(
@@ -47,11 +51,15 @@ object Pricing {
         val vat = Store.inclVat(ctx)
         val extra = Store.extraOre(ctx) / 100.0
         return hours.map { h ->
-            var p = h.spot + extra
-            if (transport) p += h.net + h.energinet
-            if (tax) p += h.tax
-            if (vat) p *= 1.25
-            h.copy(price = p)
+            var add = extra
+            if (transport) add += h.net + h.energinet
+            if (tax) add += h.tax
+            val f = if (vat) 1.25 else 1.0
+            h.copy(
+                price = (h.spot + add) * f,
+                priceLo = if (h.spotLo.isNaN()) Double.NaN else (h.spotLo + add) * f,
+                priceHi = if (h.spotHi.isNaN()) Double.NaN else (h.spotHi + add) * f
+            )
         }
     }
 
@@ -79,7 +87,8 @@ object PriceRepository {
     private class SourceHours(
         val spot: Map<Long, Double>,
         val parts: Map<Long, Parts>,
-        val forecast: Set<Long>
+        val forecast: Set<Long>,
+        val range: Map<Long, Pair<Double, Double>> = emptyMap()
     )
 
     fun fetch(area: String, supplierId: String): PriceData {
@@ -113,7 +122,9 @@ object PriceRepository {
             val parts = strom?.parts?.get(h) ?: byHourOfDay[Fmt.hour(h)] ?: fallback
             val isForecast = (strom?.forecast?.contains(h) == true) ||
                 (elpriser?.forecast?.contains(h) == true)
-            HourPrice(h, values.average(), parts.net, parts.energinet, parts.tax, values.size, isForecast)
+            val r = elpriser?.range?.get(h)
+            HourPrice(h, values.average(), parts.net, parts.energinet, parts.tax, values.size, isForecast,
+                r?.first ?: Double.NaN, r?.second ?: Double.NaN)
         }
         return PriceData(result, ok, failed, System.currentTimeMillis(), area, supplierId)
     }
@@ -177,6 +188,7 @@ object PriceRepository {
         val days = json.getJSONArray("days")
         val spot = HashMap<Long, Double>()
         val forecast = HashSet<Long>()
+        val range = HashMap<Long, Pair<Double, Double>>()
         for (d in 0 until days.length()) {
             val day = days.getJSONObject(d)
             val date = LocalDate.parse(day.getString("date"))
@@ -187,10 +199,13 @@ object PriceRepository {
                 val h = date.atTime(p.getInt("hour"), 0).atZone(CPH).toInstant().toEpochMilli()
                 spot[h] = p.getDouble("price")
                 if (isForecast) forecast.add(h)
+                val lo = p.optDouble("min", Double.NaN)
+                val hi = p.optDouble("max", Double.NaN)
+                if (!lo.isNaN() && !hi.isNaN()) range[h] = lo to hi
             }
         }
         if (spot.isEmpty()) throw IOException("Tomt svar")
-        return SourceHours(spot, emptyMap(), forecast)
+        return SourceHours(spot, emptyMap(), forecast, range)
     }
 
     private fun httpGet(url: String): String {
@@ -238,6 +253,16 @@ object Store {
     fun inclVat(ctx: Context) = bool(ctx, "inclVat", true)
     fun setInclVat(ctx: Context, v: Boolean) = setBool(ctx, "inclVat", v)
 
+    // Ladeplan: så mange kWh med denne effekt, færdig senest på dette tidspunkt
+    fun planKwh(ctx: Context): Int = prefs(ctx).getInt("planKwh", 50)
+    fun setPlanKwh(ctx: Context, v: Int) = prefs(ctx).edit().putInt("planKwh", v).apply()
+    fun planKw(ctx: Context): Float = prefs(ctx).getFloat("planKw", 11f)
+    fun setPlanKw(ctx: Context, v: Float) = prefs(ctx).edit().putFloat("planKw", v).apply()
+    fun planDeadline(ctx: Context): Long = prefs(ctx).getLong("planDeadline", 0L)
+    fun setPlanDeadline(ctx: Context, v: Long) = prefs(ctx).edit().putLong("planDeadline", v).apply()
+    fun planNotify(ctx: Context) = bool(ctx, "planNotify", false)
+    fun setPlanNotify(ctx: Context, v: Boolean) = setBool(ctx, "planNotify", v)
+
     fun notify(ctx: Context): Boolean = bool(ctx, "notify", true)
     fun setNotify(ctx: Context, v: Boolean) = setBool(ctx, "notify", v)
 
@@ -247,7 +272,7 @@ object Store {
     fun markNotified(ctx: Context, dayKey: String) {
         val today = LocalDate.now(CPH)
         val keep = prefs(ctx).getStringSet("notified", emptySet())!!
-            .filter { runCatching { !LocalDate.parse(it).isBefore(today.minusDays(2)) }.getOrDefault(false) }
+            .filter { runCatching { !LocalDate.parse(it.take(10)).isBefore(today.minusDays(2)) }.getOrDefault(false) }
             .toMutableSet()
         keep.add(dayKey)
         prefs(ctx).edit().putStringSet("notified", keep).apply()
@@ -259,10 +284,11 @@ object Store {
             arr.put(JSONObject().apply {
                 put("s", it.start); put("sp", it.spot); put("ne", it.net); put("en", it.energinet)
                 put("tx", it.tax); put("n", it.sources); put("f", it.forecast)
+                if (!it.spotLo.isNaN()) { put("lo", it.spotLo); put("hi", it.spotHi) }
             })
         }
         val obj = JSONObject().apply {
-            put("v", 2)
+            put("v", 3)
             put("hours", arr)
             put("ok", JSONArray(data.okSources))
             put("failed", JSONArray(data.failedSources))
@@ -277,12 +303,13 @@ object Store {
         val raw = prefs(ctx).getString("cache", null) ?: return null
         return try {
             val obj = JSONObject(raw)
-            if (obj.optInt("v", 1) < 2) return null
+            if (obj.optInt("v", 1) < 3) return null
             val arr = obj.getJSONArray("hours")
             val hours = (0 until arr.length()).map {
                 val o = arr.getJSONObject(it)
                 HourPrice(o.getLong("s"), o.getDouble("sp"), o.getDouble("ne"), o.getDouble("en"),
-                    o.getDouble("tx"), o.getInt("n"), o.getBoolean("f"))
+                    o.getDouble("tx"), o.getInt("n"), o.getBoolean("f"),
+                    o.optDouble("lo", Double.NaN), o.optDouble("hi", Double.NaN))
             }
             fun strings(a: JSONArray) = (0 until a.length()).map { a.getString(it) }
             PriceData(hours, strings(obj.getJSONArray("ok")), strings(obj.getJSONArray("failed")),
