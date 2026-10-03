@@ -12,7 +12,8 @@ Android app der viser elprisen de næste 9 dage, finder de billigste timer at la
 * Finder for hver dag det billigste sammenhængende tidsrum på det antal timer du vil lade (standard 4 timer).
 * Sender en besked en time før hver dags bedste tidsrum de første 5 dage. Opdaterer sig selv hver 3. time, også når appen er lukket.
 * Viser 9 dage. I dag og i morgen er kendte priser, dag 3 til 5 er prognose, og dag 6 til 9 er et groft skøn.
-* Forklarer kort for hver dag, om der er vind eller sol i Danmark og Tyskland, ud fra vejrudsigten fra Open-Meteo.
+* Forklarer kort for hver dag, om der er vind i Danmark, Nordtyskland og Sydsverige eller sol i Danmark og Tyskland, ud fra vejrudsigten fra Open-Meteo.
+* Viser hvor fyldte de sydnorske vandmagasiner er i forhold til normalt, ud fra NVE's ugentlige tal.
 * Ladeplan: skriv hvor mange kWh du skal bruge, og hvornår bilen skal være klar, så finder appen de billigste timer og kan minde dig om dem.
 
 elforbrug.nu og elberegner.dk er ikke med, fordi de ikke har åbne data en app kan hente.
@@ -38,4 +39,4 @@ elforbrug.nu og elberegner.dk er ikke med, fordi de ikke har åbne data en app k
 * Med i prisen: transport, elafgift, moms og elhandlers tillæg i øre
 * Påmindelse: til eller fra
 
-Data: [Strømligning](https://stromligning.dk), [elpriser.org](https://elpriser.org) og [Open-Meteo](https://open-meteo.com) (vejr)
+Data: [Strømligning](https://stromligning.dk), [elpriser.org](https://elpriser.org), [Open-Meteo](https://open-meteo.com) (vejr) og [NVE](https://www.nve.no) (norske vandmagasiner)

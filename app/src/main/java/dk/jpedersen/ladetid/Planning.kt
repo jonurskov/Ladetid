@@ -206,6 +206,10 @@ object Refresher {
             WeatherRepository.save(ctx, WeatherRepository.fetch())
         } catch (e: Exception) {
         }
+        try {
+            HydroRepository.refreshIfOld(ctx)
+        } catch (e: Exception) {
+        }
         replan(ctx, data)
         return data
     }

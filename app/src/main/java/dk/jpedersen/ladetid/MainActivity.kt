@@ -322,6 +322,14 @@ class MainActivity : Activity() {
         val byDay = data.hours.groupBy { Planner.dateOf(it.start) }
         val periodAvg = shown.map { it.price }.average()
         val weather = WeatherRepository.load(this)
+        val hydroNote = findViewById<TextView>(R.id.hydroNote)
+        val hydro = HydroRepository.load(this)
+        if (hydro != null) {
+            hydroNote.text = "Baggrund: ${HydroRepository.describe(hydro)}"
+            hydroNote.visibility = View.VISIBLE
+        } else {
+            hydroNote.visibility = View.GONE
+        }
         val byStart = data.hours.associateBy { it.start }
         windows.forEach { w ->
             val dayHours = byDay[w.day].orEmpty()
@@ -355,8 +363,9 @@ class MainActivity : Activity() {
                 "Vind og sol er hentet fra vejrudsigten og er et skøn over, hvad der påvirker prisen, " +
                 "ikke en præcis forklaring.<br>" +
                 "Data: <a href=\"https://stromligning.dk\">Strømligning</a>, " +
-                "<a href=\"https://elpriser.org\">elpriser.org</a> og " +
-                "<a href=\"https://open-meteo.com\">Open-Meteo</a> (vejr)",
+                "<a href=\"https://elpriser.org\">elpriser.org</a>, " +
+                "<a href=\"https://open-meteo.com\">Open-Meteo</a> (vejr) og " +
+                "<a href=\"https://www.nve.no\">NVE</a> (norske vandmagasiner)",
             Html.FROM_HTML_MODE_LEGACY
         )
         sources.movementMethod = LinkMovementMethod.getInstance()

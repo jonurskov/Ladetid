@@ -410,6 +410,18 @@
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
+            <TextView
+                android:id="@+id/hydroNote"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/plan_bg"
+                android:lineSpacingExtra="2dp"
+                android:padding="10dp"
+                android:textColor="@color/ink"
+                android:textSize="12.5sp"
+                android:visibility="gone" />
+
             <LinearLayout
                 android:id="@+id/dayList"
                 android:layout_width="match_parent"
