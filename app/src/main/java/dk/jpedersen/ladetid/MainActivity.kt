@@ -546,7 +546,9 @@ class MainActivity : Activity() {
             "Fejl i øre er den gennemsnitlige afvigelse pr. time. Fejl i procent er afvigelsen i forhold til den faktiske pris. " +
             "Ramte ladetiden betyder, at prognosen fandt de billigste 4 timer inden for 1 time. " +
             "Ramte døgnets forløb er, hvor ofte prognosen havde ret i, om en time var billig, middel eller dyr. " +
-            "Alle tal er spotpris uden moms, tariffer og afgifter.", 12.5f, R.color.muted))
+            "Alle tal er spotpris uden moms, tariffer og afgifter. " +
+            "Rettelsen lærer af vind, sol, temperatur og helligdage, men flytter aldrig prognosen mere end 10 % og højst 15 øre " +
+            "væk fra elpriser.org og Strømligning.", 12.5f, R.color.muted))
         if (a == null) {
             box.addView(text("Der er ingen tal endnu.", 14f, R.color.ink).apply { setPadding(0, dp(10), 0, 0) })
         } else {
@@ -563,6 +565,20 @@ class MainActivity : Activity() {
                         "%.1f øre %s", Math.abs(sk), dir)))
                 }
                 box.addView(pair("Antal dage målt", raw?.optInt("dage")?.toString() ?: "0"))
+            }
+            val fk = a.optJSONObject("faktorer")
+            if (fk != null && fk.length() > 0) {
+                box.addView(heading("DET HAR APPEN LÆRT"))
+                box.addView(text("Hvor meget rettelsen flytter prisen i dagtimerne (kl. 7 til 20):", 12f, R.color.muted))
+                val names = mapOf("temp" to "Temperatur", "vind" to "Vind", "sol" to "Sol", "helligdag" to "Helligdag")
+                for ((gName, g) in listOf("Kort sigt" to "kort", "Lang sigt" to "lang")) {
+                    val p = fk.optJSONObject(g)?.optJSONObject("spids") ?: continue
+                    box.addView(text(gName, 13f, R.color.ink, bold = true).apply { setPadding(0, dp(6), 0, 0) })
+                    for ((k, label) in names) {
+                        val v = p.optString(k, "")
+                        if (v.isNotEmpty()) box.addView(pair(label, v))
+                    }
+                }
             }
             val hz = a.optJSONArray("horisonter")
             if (hz != null && hz.length() > 0) {

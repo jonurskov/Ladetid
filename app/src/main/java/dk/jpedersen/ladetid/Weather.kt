@@ -21,7 +21,8 @@ data class DayWeather(
     val deWind: Double,
     val seWind: Double,
     val dkSun: Double,
-    val deSun: Double
+    val deSun: Double,
+    val dkTemp: Double = Double.NaN   // døgnets gennemsnitstemperatur midt i Danmark (°C)
 )
 
 /**
@@ -46,7 +47,9 @@ object WeatherRepository {
         val dkWind = daily(DK_WIND).first
         val deWind = daily(DE_WIND).first
         val seWind = try { daily(SE_WIND).first } catch (e: Exception) { emptyMap() }
-        val dkSun = daily(DK_SUN).second
+        val dkSunAll = daily(DK_SUN)
+        val dkSun = dkSunAll.second
+        val dkTemp = dkSunAll.third
         val deSun = daily(DE_SUN).second
         val dates = dkWind.keys.sorted()
         return dates.mapNotNull { d ->
@@ -57,20 +60,24 @@ object WeatherRepository {
                 deWind[d] ?: Double.NaN,
                 seWind[d] ?: Double.NaN,
                 (dkSun[d] ?: Double.NaN) / clear,
-                (deSun[d] ?: Double.NaN) / clear
+                (deSun[d] ?: Double.NaN) / clear,
+                dkTemp[d] ?: Double.NaN
             )
         }
     }
 
-    /** Returnerer (gennemsnitlig vind pr. dag, samlet solindstråling i MJ pr. m² pr. dag). */
-    private fun daily(p: Point): Pair<Map<LocalDate, Double>, Map<LocalDate, Double>> {
+    /** Returnerer (gennemsnitlig vind pr. dag, samlet solindstråling i MJ pr. m² pr. dag, gennemsnitstemperatur). */
+    private fun daily(p: Point): Triple<Map<LocalDate, Double>, Map<LocalDate, Double>, Map<LocalDate, Double>> {
         val url = "https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}" +
-            "&hourly=wind_speed_120m,shortwave_radiation&wind_speed_unit=ms" +
+            "&hourly=wind_speed_120m,shortwave_radiation,temperature_2m&wind_speed_unit=ms" +
             "&timezone=Europe%2FCopenhagen&forecast_days=10"
         val hourly = JSONObject(httpGet(url)).getJSONObject("hourly")
         val times = hourly.getJSONArray("time")
         val wind = hourly.getJSONArray("wind_speed_120m")
         val rad = hourly.getJSONArray("shortwave_radiation")
+        val temp = hourly.optJSONArray("temperature_2m")
+        val tempSum = HashMap<LocalDate, Double>()
+        val tempN = HashMap<LocalDate, Int>()
 
         val windSum = HashMap<LocalDate, Double>()
         val windN = HashMap<LocalDate, Int>()
@@ -85,9 +92,15 @@ object WeatherRepository {
             val r = rad.optDouble(i, Double.NaN)
             // W pr. m² i en time svarer til 0,0036 MJ pr. m²
             if (!r.isNaN()) radSum[d] = (radSum[d] ?: 0.0) + r * 0.0036
+            val t = temp?.optDouble(i, Double.NaN) ?: Double.NaN
+            if (!t.isNaN()) {
+                tempSum[d] = (tempSum[d] ?: 0.0) + t
+                tempN[d] = (tempN[d] ?: 0) + 1
+            }
         }
         val windAvg = windSum.filter { (windN[it.key] ?: 0) >= 20 }.mapValues { it.value / windN.getValue(it.key) }
-        return windAvg to radSum
+        val tempAvg = tempSum.filter { (tempN[it.key] ?: 0) >= 20 }.mapValues { it.value / tempN.getValue(it.key) }
+        return Triple(windAvg, radSum, tempAvg)
     }
 
     private fun httpGet(url: String): String {
@@ -109,6 +122,7 @@ object WeatherRepository {
             arr.put(JSONObject().apply {
                 put("d", it.date.toString()); put("dw", it.dkWind); put("ew", nz(it.deWind)); put("sw", nz(it.seWind))
                 put("ds", nz(it.dkSun)); put("es", nz(it.deSun))
+                if (!it.dkTemp.isNaN()) put("t", it.dkTemp)
             })
         }
         ctx.getSharedPreferences("ladetid", Context.MODE_PRIVATE).edit()
@@ -124,7 +138,7 @@ object WeatherRepository {
                 val o = arr.getJSONObject(it)
                 val d = LocalDate.parse(o.getString("d"))
                 d to DayWeather(d, o.getDouble("dw"), o.getDouble("ew"), o.optDouble("sw", -1.0),
-                    o.getDouble("ds"), o.getDouble("es"))
+                    o.getDouble("ds"), o.getDouble("es"), o.optDouble("t", Double.NaN))
             }
         } catch (e: Exception) {
             emptyMap()
@@ -172,7 +186,19 @@ object Explain {
                 }
             }
         }
-        if (date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY) {
+        if (w != null && !w.dkTemp.isNaN()) {
+            val t = Math.round(w.dkTemp).toInt()
+            when {
+                w.dkTemp < 0 -> parts.add("frost ($t °C), så der bruges mere strøm til varme")
+                w.dkTemp < 5 -> parts.add("koldt ($t °C), så der bruges mere strøm til varme")
+            }
+        }
+        val holiday = Holidays.name(date)
+        if (holiday != null) {
+            parts.add("$holiday med lavere forbrug")
+        } else if (date.monthValue == 12 && date.dayOfMonth in 27..30) {
+            parts.add("mellem jul og nytår med lavere forbrug")
+        } else if (date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY) {
             parts.add("weekend med lavere forbrug")
         }
         if (parts.isEmpty()) return ""
@@ -182,6 +208,42 @@ object Explain {
 
     private fun joinPlaces(p: List<String>): String =
         if (p.size == 1) p[0] else p.dropLast(1).joinToString(", ") + " og " + p.last()
+}
+
+/** Danske helligdage. Store bededag er afskaffet fra 2024. */
+object Holidays {
+    private fun easter(y: Int): LocalDate {
+        val a = y % 19; val b = y / 100; val c = y % 100
+        val d = b / 4; val e = b % 4
+        val f = (b + 8) / 25; val g = (b - f + 1) / 3
+        val h = (19 * a + b - d - g + 15) % 30
+        val i = c / 4; val k = c % 4
+        val l = (32 + 2 * e + 2 * i - h - k) % 7
+        val m = (a + 11 * h + 22 * l) / 451
+        val month = (h + l - 7 * m + 114) / 31
+        val day = ((h + l - 7 * m + 114) % 31) + 1
+        return LocalDate.of(y, month, day)
+    }
+
+    fun name(d: LocalDate): String? {
+        val e = easter(d.year)
+        return when (d) {
+            LocalDate.of(d.year, 1, 1) -> "nytårsdag"
+            e.minusDays(3) -> "skærtorsdag"
+            e.minusDays(2) -> "langfredag"
+            e -> "påskedag"
+            e.plusDays(1) -> "2. påskedag"
+            e.plusDays(39) -> "Kristi himmelfartsdag"
+            e.plusDays(49) -> "pinsedag"
+            e.plusDays(50) -> "2. pinsedag"
+            LocalDate.of(d.year, 6, 5) -> "grundlovsdag"
+            LocalDate.of(d.year, 12, 24) -> "juleaften"
+            LocalDate.of(d.year, 12, 25) -> "juledag"
+            LocalDate.of(d.year, 12, 26) -> "2. juledag"
+            LocalDate.of(d.year, 12, 31) -> "nytårsaften"
+            else -> null
+        }
+    }
 }
 
 /**

@@ -50,7 +50,11 @@ object Quality {
     fun apply(ctx: Context, data: PriceData): PriceData {
         val area = fix(ctx)?.optJSONObject("omraader")?.optJSONObject(data.area) ?: return data
         val brug = area.optJSONObject("brug") ?: return data
-        val skaev = area.optJSONObject("skaevhed") ?: return data
+        val skaev = area.optJSONObject("skaevhed")
+        val dage = area.optJSONObject("dage")
+        val root = fix(ctx)
+        val maxPct = root?.optDouble("max_pct", 0.10) ?: 0.10
+        val maxKr = root?.optDouble("max_kr", 0.15) ?: 0.15
         val today = LocalDate.now(CPH)
         val hours = data.hours.map { h ->
             if (!h.forecast) return@map h
@@ -58,9 +62,15 @@ object Quality {
             if (days !in 1..9) return@map h
             val use = if (days <= 4) brug.optBoolean("kort") else brug.optBoolean("lang")
             if (!use) return@map h
-            val arr = skaev.optJSONArray(days.toString()) ?: return@map h
-            val b = arr.optDouble(Fmt.hour(h.start), 0.0)
+            // Rettelsen for den enkelte dag bygger på vind, sol, temperatur og helligdage.
+            // Findes den ikke, bruges den typiske fejl for antal dage frem.
+            val arr = dage?.optJSONArray(Planner.dateOf(h.start).toString())
+                ?: skaev?.optJSONArray(days.toString()) ?: return@map h
+            var b = arr.optDouble(Fmt.hour(h.start), 0.0)
             if (b.isNaN() || b == 0.0) return@map h
+            // Rettelsen må aldrig flytte prognosen langt væk fra kilderne
+            val limit = minOf(maxKr, maxPct * Math.abs(h.spot))
+            b = b.coerceIn(-limit, limit)
             h.copy(
                 spot = h.spot - b,
                 spotLo = if (h.spotLo.isNaN()) h.spotLo else h.spotLo - b,
