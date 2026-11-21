@@ -29,7 +29,8 @@ data class HourPrice(
     val spotHi: Double = Double.NaN,  // højeste forventede spotpris (kun prognoser)
     val price: Double = 0.0,
     val priceLo: Double = Double.NaN,
-    val priceHi: Double = Double.NaN
+    val priceHi: Double = Double.NaN,
+    val fix: Double = 0.0             // rettelse fra appens egen prognosekontrol (trukket fra spot)
 )
 
 class PriceData(
@@ -285,6 +286,7 @@ object Store {
                 put("s", it.start); put("sp", it.spot); put("ne", it.net); put("en", it.energinet)
                 put("tx", it.tax); put("n", it.sources); put("f", it.forecast)
                 if (!it.spotLo.isNaN()) { put("lo", it.spotLo); put("hi", it.spotHi) }
+                if (it.fix != 0.0) put("fx", it.fix)
             })
         }
         val obj = JSONObject().apply {
@@ -309,7 +311,8 @@ object Store {
                 val o = arr.getJSONObject(it)
                 HourPrice(o.getLong("s"), o.getDouble("sp"), o.getDouble("ne"), o.getDouble("en"),
                     o.getDouble("tx"), o.getInt("n"), o.getBoolean("f"),
-                    o.optDouble("lo", Double.NaN), o.optDouble("hi", Double.NaN))
+                    o.optDouble("lo", Double.NaN), o.optDouble("hi", Double.NaN),
+                    fix = o.optDouble("fx", 0.0))
             }
             fun strings(a: JSONArray) = (0 until a.length()).map { a.getString(it) }
             PriceData(hours, strings(obj.getJSONArray("ok")), strings(obj.getJSONArray("failed")),

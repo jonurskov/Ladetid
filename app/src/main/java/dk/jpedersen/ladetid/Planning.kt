@@ -199,7 +199,13 @@ object Refresher {
     private const val ONCE = "ladetid-nu"
 
     fun refresh(ctx: Context): PriceData {
-        val data = PriceRepository.fetch(Store.area(ctx), Store.supplierId(ctx))
+        val raw = PriceRepository.fetch(Store.area(ctx), Store.supplierId(ctx))
+        // Appens egen prognosekontrol. Fejler hentningen, bruges den sidst gemte.
+        try {
+            Quality.refresh(ctx)
+        } catch (e: Exception) {
+        }
+        val data = Quality.apply(ctx, raw)
         Store.save(ctx, data)
         // Vejret er kun til forklaring, så appen virker videre, hvis det fejler
         try {

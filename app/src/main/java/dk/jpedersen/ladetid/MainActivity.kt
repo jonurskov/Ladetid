@@ -3,7 +3,9 @@ package dk.jpedersen.ladetid
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
@@ -87,6 +89,9 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.planKwPlus).setOnClickListener { changeKw(+1) }
         planDay.setOnClickListener { pickPlanDay() }
         planHour.setOnClickListener { pickPlanHour() }
+        findViewById<View>(R.id.qualityCard).setOnClickListener { showQualityDetail() }
+        findViewById<View>(R.id.excelWeek).setOnClickListener { openUrl(Quality.EXCEL_URL) }
+        findViewById<View>(R.id.excelNow).setOnClickListener { openUrl(Quality.EXCEL_THIS_WEEK_URL) }
         bindSwitch(R.id.planNotifySwitch, Store.planNotify(this)) {
             Store.setPlanNotify(this, it)
             if (it) askNotificationPermission()
@@ -309,6 +314,7 @@ class MainActivity : Activity() {
             data.hours, Store.planKwh(this).toDouble(), Store.planKw(this).toDouble(), now, deadline
         ) else null
         renderPlan(plan, deadline)
+        renderQuality(stored.area)
 
         // Graf fra nu og 9 dage frem
         val today = Planner.dateOf(now)
@@ -480,6 +486,121 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            subtitle.text = "Kunne ikke åbne linket"
+        }
+    }
+
+    private fun pct(v: Any?): String = if (v is Number) "${v.toInt()} %" else "ingen data"
+
+    private fun ore(m: org.json.JSONObject?): String {
+        if (m == null) return "ingen data"
+        val o = m.optDouble("fejl_ore", Double.NaN)
+        val p = m.optDouble("fejl_pct", Double.NaN)
+        if (o.isNaN()) return "ingen data"
+        val os = String.format(java.util.Locale("da", "DK"), "%.1f øre", o)
+        return if (p.isNaN()) os else os + String.format(java.util.Locale("da", "DK"), " (%.0f %%)", p)
+    }
+
+    private fun qArea(area: String) = Quality.report(this)?.optJSONObject("omraader")?.optJSONObject(area)
+
+    /** Kortet på forsiden: fejl og træfsikkerhed for kort og lang sigt. */
+    private fun renderQuality(area: String) {
+        val body = findViewById<LinearLayout>(R.id.qualityBody)
+        val note = findViewById<TextView>(R.id.qualityNote)
+        body.removeAllViews()
+        val a = qArea(area)
+        val kort = a?.optJSONObject("kort")
+        val lang = a?.optJSONObject("lang")
+        if (kort == null && lang == null) {
+            note.text = "Appen er begyndt at gemme sine prognoser og sammenligne dem med de faktiske priser. " +
+                "De første tal kommer om et par dage, og efter 2 til 4 uger begynder den at rette sine prognoser."
+            return
+        }
+        note.text = "De sidste 4 uger. Tryk for detaljer."
+        val (useK, useL) = Quality.inUse(this, area)
+        fun block(title: String, m: org.json.JSONObject?, used: Boolean) {
+            body.addView(heading(title))
+            body.addView(pair("Gennemsnitlig fejl", ore(m)))
+            body.addView(pair("Ramte ladetiden", pct(m?.opt("ramte_ladetid_pct"))))
+            body.addView(pair("Ramte døgnets forløb", pct(m?.opt("ramte_doegn_pct"))))
+            body.addView(text(if (used) "Bruger sin egen rettelse, fordi den har ramt bedre."
+                else "Bruger den rå prognose. Rettelsen har ikke ramt bedre endnu.", 12f, R.color.muted))
+        }
+        block("KORT SIGT (1 TIL 4 DAGE)", kort, useK)
+        block("LANG SIGT (5 TIL 9 DAGE)", lang, useL)
+    }
+
+    /** Detaljer: forklaring, hver horisont og fejlen time for time over døgnet. */
+    private fun showQualityDetail() {
+        val area = Store.area(this)
+        val a = qArea(area)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(8), dp(22), dp(8))
+        }
+        box.addView(text("Hver dag gemmer appen sine prognoser. Når den faktiske pris kommer, måles fejlen. " +
+            "Fejl i øre er den gennemsnitlige afvigelse pr. time. Fejl i procent er afvigelsen i forhold til den faktiske pris. " +
+            "Ramte ladetiden betyder, at prognosen fandt de billigste 4 timer inden for 1 time. " +
+            "Ramte døgnets forløb er, hvor ofte prognosen havde ret i, om en time var billig, middel eller dyr. " +
+            "Alle tal er spotpris uden moms, tariffer og afgifter.", 12.5f, R.color.muted))
+        if (a == null) {
+            box.addView(text("Der er ingen tal endnu.", 14f, R.color.ink).apply { setPadding(0, dp(10), 0, 0) })
+        } else {
+            for ((name, key) in listOf("KORT SIGT" to "kort", "LANG SIGT" to "lang")) {
+                val raw = a.optJSONObject(key)
+                val fixed = a.optJSONObject(key + "_rettet")
+                box.addView(heading(name))
+                box.addView(pair("Fejl, rå prognose", ore(raw)))
+                box.addView(pair("Fejl, med rettelse", ore(fixed)))
+                val sk = raw?.optDouble("skaevhed_ore", Double.NaN) ?: Double.NaN
+                if (!sk.isNaN()) {
+                    val dir = if (sk >= 0) "for høj" else "for lav"
+                    box.addView(pair("Prognosen er typisk", String.format(java.util.Locale("da", "DK"),
+                        "%.1f øre %s", Math.abs(sk), dir)))
+                }
+                box.addView(pair("Antal dage målt", raw?.optInt("dage")?.toString() ?: "0"))
+            }
+            val hz = a.optJSONArray("horisonter")
+            if (hz != null && hz.length() > 0) {
+                box.addView(heading("DAGE FREM"))
+                for (i in 0 until hz.length()) {
+                    val m = hz.getJSONObject(i)
+                    val h = m.optInt("horisont")
+                    box.addView(pair("$h ${if (h == 1) "dag" else "dage"} frem",
+                        "${ore(m)} · ${pct(m.opt("ramte_ladetid_pct"))}"))
+                }
+                box.addView(text("Sidste tal er hvor ofte ladetiden blev ramt.", 12f, R.color.muted))
+            }
+            val k = a.optJSONObject("kort")?.optJSONArray("fejl_pr_time_ore")
+            val l = a.optJSONObject("lang")?.optJSONArray("fejl_pr_time_ore")
+            if (k != null || l != null) {
+                box.addView(heading("FEJL OVER DØGNET (ØRE)"))
+                box.addView(pair("Time", "kort · lang", bold = true))
+                for (h in 0 until 24) {
+                    fun v(arr: org.json.JSONArray?) = arr?.optDouble(h, Double.NaN)?.let {
+                        if (it.isNaN()) "" else String.format(java.util.Locale("da", "DK"), "%.1f", it)
+                    } ?: ""
+                    box.addView(pair("kl. %02d".format(h), "${v(k)} · ${v(l)}"))
+                }
+            }
+        }
+        box.addView(text("Excel filer for hver uge ligger på GitHub.", 12.5f, R.color.accent, bold = true).apply {
+            setPadding(0, dp(14), 0, 0)
+            setOnClickListener { openUrl(Quality.EXCEL_FOLDER_URL) }
+        })
+        val scroll = android.widget.ScrollView(this)
+        scroll.addView(box)
+        AlertDialog.Builder(this)
+            .setTitle("Prognosekontrol")
+            .setView(scroll)
+            .setPositiveButton("Luk", null)
+            .show()
+    }
+
     private fun num(v: Double) = String.format(java.util.Locale("da", "DK"), "%.2f", v)
 
     /** En række med tekst til venstre og et tal til højre. */
@@ -544,6 +665,12 @@ class MainActivity : Activity() {
             val n = inWin.map { it.sources }.minOrNull() ?: 1
             val spotLabel = if (n >= 2) "Spotpris (snit af ${sources.joinToString(" og ")})" else "Spotpris"
             box.addView(pair(spotLabel, "${num(spot)} kr"))
+            val fx = inWin.map { it.fix }.average()
+            if (fx != 0.0 && !fx.isNaN()) {
+                val dir = if (fx > 0) "trukket fra" else "lagt til"
+                box.addView(text("Spotprisen er rettet ud fra appens egen prognosekontrol: ${num(Math.abs(fx))} kr $dir.",
+                    12f, R.color.muted).apply { setPadding(0, 0, 0, dp(4)) })
+            }
             if (extra > 0) box.addView(pair("Elhandlers tillæg", "${num(extra)} kr"))
             if (transport) {
                 val name = Store.supplierName(this).ifEmpty { "netselskab" }
