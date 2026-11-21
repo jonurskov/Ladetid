@@ -15,6 +15,7 @@ Android app der viser elprisen de næste 9 dage, finder de billigste timer at la
 * Forklarer kort for hver dag, om der er vind i Danmark, Nordtyskland og Sydsverige eller sol i Danmark og Tyskland, ud fra vejrudsigten fra Open-Meteo.
 * Viser hvor fyldte de sydnorske vandmagasiner er i forhold til normalt, ud fra NVE's ugentlige tal.
 * Viser dagens laveste og højeste pris. Tryk på en dag for at se timepriserne i ladetiden og hvad prisen består af.
+* Prognosekontrol: hver dag gemmes prognosen og sammenlignes med den faktiske pris i repoet Ladetid-data. Appen viser fejlen i øre og procent for kort sigt (1 til 4 dage) og lang sigt (5 til 9 dage), hvor ofte den ramte ladetiden og døgnets forløb, og retter selv prognosen, hvis rettelsen har ramt bedre de sidste 4 uger. Der kommer en Excel fil hver uge.
 * Ladeplan: skriv hvor mange kWh du skal bruge, og hvornår bilen skal være klar, så finder appen de billigste timer og kan minde dig om dem.
 
 elforbrug.nu og elberegner.dk er ikke med, fordi de ikke har åbne data en app kan hente.
