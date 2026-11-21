@@ -42,3 +42,5 @@ elforbrug.nu og elberegner.dk er ikke med, fordi de ikke har åbne data en app k
 * Påmindelse: til eller fra
 
 Data: [Strømligning](https://stromligning.dk), [elpriser.org](https://elpriser.org), [Open-Meteo](https://open-meteo.com) (vejr) og [NVE](https://www.nve.no) (norske vandmagasiner)
+
+Prognosekontrol og ugentlige Excel filer: [jonurskov/Ladetid-data](https://github.com/jonurskov/Ladetid-data)
